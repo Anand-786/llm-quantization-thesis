@@ -80,11 +80,17 @@ from shared.eval_utils import run_full_evaluation
 from shared.quant_utils import get_act_scales, smooth_layer, get_scheme_info
 
 # ─── Import the Task 01 functions ────────────────────────────────────────────
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "experiments", "task01_scheme_exploration"))
-from run_scheme_eval import (
-    apply_smoothing,
-    quantize_model_weights_and_activations,
+import importlib.util
+
+_task01_path = os.path.join(
+    PROJECT_ROOT, "experiments", "task01_scheme_exploration", "run_scheme_eval.py"
 )
+_spec = importlib.util.spec_from_file_location("run_scheme_eval", _task01_path)
+_task01 = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_task01)
+
+apply_smoothing = _task01.apply_smoothing
+quantize_model_weights_and_activations = _task01.quantize_model_weights_and_activations
 
 
 # ─── Sanity Check ────────────────────────────────────────────────────────────
