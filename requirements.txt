@@ -1,0 +1,11 @@
+torch>=2.0.0
+transformers>=4.36.0
+accelerate>=0.25.0
+datasets>=2.14.0
+lm-eval>=0.4.0
+smoothquant
+numpy
+pandas
+matplotlib
+seaborn
+tqdm

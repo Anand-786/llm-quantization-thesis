@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights & large files (NEVER commit these)
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+models/
+
+# HuggingFace cache
+.cache/
+
+# Large data files
+*.csv
+!experiments/*/results/*.csv
+*.parquet
+*.arrow
+
+# Keep result JSONs tracked
+!experiments/*/results/*.json
+
+# Logs
+*.log
+wandb/
+
+# Drive sync temp
+drive_sync/temp/
