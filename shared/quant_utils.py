@@ -1,179 +1,71 @@
 """
 Quantization utilities.
-Handles loading SmoothQuant activation scales, applying smoothing,
-and wrapping models with quantized linear layers.
+Uses SmoothQuant's own library functions where possible.
+Our custom code only for things SmoothQuant doesn't provide.
 """
 
 import os
 import torch
-import torch.nn as nn
-from functools import partial
 
 
-# ─── Activation Scale Loading ────────────────────────────────────────────────
-
-def get_act_scales(model_name: str, scales_dir: str = None) -> dict:
+def find_act_scales_file(model_name: str, scales_dir: str) -> str:
     """
-    Load pre-computed activation scales for a model.
+    Find the activation scales .pt file for a given model.
     
-    SmoothQuant provides these in their repo under act_scales/.
-    You should download them once and store on Drive.
-    
-    Args:
-        model_name: HuggingFace model name (e.g. 'facebook/opt-1.3b').
-        scales_dir: Directory containing .pt scale files.
-                    If None, looks in smoothquant/act_scales/.
-    
-    Returns:
-        Dict mapping layer names to scale tensors.
+    SmoothQuant names these files using the last part of the model name:
+      'facebook/opt-1.3b' -> 'opt-1.3b.pt'
+      'meta-llama/Llama-2-7b-hf' -> 'Llama-2-7b-hf.pt'
     """
-    if scales_dir is None:
-        # Default: look in cloned smoothquant repo
-        scales_dir = "smoothquant/act_scales"
+    short_name = model_name.split("/")[-1]
+    path = os.path.join(scales_dir, short_name + ".pt")
     
-    # Convert model name to filename format
-    fname = model_name.replace("/", "-") + ".pt"
-    path = os.path.join(scales_dir, fname)
+    if os.path.exists(path):
+        return path
     
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Activation scales not found at {path}. "
-            f"Either download from SmoothQuant repo or generate them. "
-            f"Available files: {os.listdir(scales_dir) if os.path.exists(scales_dir) else 'dir missing'}"
-        )
+    # Try lowercase
+    path_lower = os.path.join(scales_dir, short_name.lower() + ".pt")
+    if os.path.exists(path_lower):
+        return path_lower
     
+    # List what's available to help debug
+    available = []
+    if os.path.isdir(scales_dir):
+        available = [f for f in os.listdir(scales_dir) if f.endswith(".pt")]
+    
+    raise FileNotFoundError(
+        f"No activation scales found for '{model_name}'.\n"
+        f"  Looked for: {path}\n"
+        f"  Available files: {available}"
+    )
+
+
+def load_act_scales(model_name: str, scales_dir: str) -> dict:
+    """Load pre-computed activation scales."""
+    path = find_act_scales_file(model_name, scales_dir)
     scales = torch.load(path, map_location="cpu")
     print(f"Loaded activation scales: {len(scales)} layers from {path}")
     return scales
 
 
-# ─── Smoothing ───────────────────────────────────────────────────────────────
-
-@torch.no_grad()
-def smooth_layer(
-    ln: nn.Module,           # LayerNorm or RMSNorm before the linear layers
-    linear_layers: list,     # List of nn.Linear modules that consume ln's output
-    act_scales: torch.Tensor,  # Per-channel activation scales [C_i]
-    alpha: float = 0.5,
-):
-    """
-    Apply SmoothQuant smoothing to a single transformer sublayer.
-    
-    Divides activation channels by smoothing factor s and multiplies
-    corresponding weight channels by s, preserving mathematical equivalence.
-    
-    s_j = act_scales_j^alpha / weight_scales_j^(1-alpha)
-    
-    Args:
-        ln: The LayerNorm preceding the linear layers.
-        linear_layers: Linear layers that take ln's output as input.
-        act_scales: Pre-computed max absolute activation per channel.
-        alpha: Migration strength. 0.5 = equal difficulty sharing.
-    """
-    device, dtype = ln.weight.device, ln.weight.dtype
-    act_scales = act_scales.to(device=device, dtype=dtype)
-    
-    # Compute weight scales: max across all target linear layers
-    weight_scales = torch.cat(
-        [l.weight.abs().max(dim=0, keepdim=True).values for l in linear_layers],
-        dim=0,
-    ).max(dim=0).values.clamp(min=1e-5)
-    
-    # Compute smoothing factor
-    s = (act_scales.pow(alpha) / weight_scales.pow(1 - alpha)).clamp(min=1e-5)
-    
-    # Apply to LayerNorm: absorb 1/s into ln weight and bias
-    ln.weight.div_(s)
-    if hasattr(ln, "bias") and ln.bias is not None:
-        ln.bias.div_(s)
-    
-    # Apply to Linear layers: absorb s into weight columns
-    for linear in linear_layers:
-        linear.weight.mul_(s.unsqueeze(0))  # s along input dim
-
-
-# ─── Simulated Quantization ──────────────────────────────────────────────────
-
 def quantize_tensor_absmax(x: torch.Tensor, n_bits: int = 8) -> torch.Tensor:
-    """
-    Simulate symmetric absmax quantization: quantize then immediately dequantize.
-    Returns a float tensor with quantization noise but same dtype as input.
-    """
-    qmax = 2 ** (n_bits - 1) - 1  # 127 for 8-bit
+    """Simulate symmetric per-tensor absmax quantization (quantize + dequantize)."""
+    qmax = 2 ** (n_bits - 1) - 1
     scale = x.abs().max() / qmax
     scale = scale.clamp(min=1e-10)
-    x_q = (x / scale).round().clamp(-qmax, qmax)
-    return x_q * scale
+    return (x / scale).round().clamp(-qmax, qmax) * scale
 
 
 def quantize_tensor_per_token(x: torch.Tensor, n_bits: int = 8) -> torch.Tensor:
-    """Per-token (row-wise) symmetric absmax quantization."""
+    """Simulate symmetric per-token (row-wise) absmax quantization."""
     qmax = 2 ** (n_bits - 1) - 1
     scale = x.abs().amax(dim=-1, keepdim=True) / qmax
     scale = scale.clamp(min=1e-10)
-    x_q = (x / scale).round().clamp(-qmax, qmax)
-    return x_q * scale
+    return (x / scale).round().clamp(-qmax, qmax) * scale
 
 
 def quantize_tensor_per_channel(x: torch.Tensor, n_bits: int = 8) -> torch.Tensor:
-    """Per-channel (column-wise) symmetric absmax quantization."""
+    """Simulate symmetric per-channel (column-wise) absmax quantization."""
     qmax = 2 ** (n_bits - 1) - 1
     scale = x.abs().amax(dim=0, keepdim=True) / qmax
     scale = scale.clamp(min=1e-10)
-    x_q = (x / scale).round().clamp(-qmax, qmax)
-    return x_q * scale
-
-
-# ─── Quantization Scheme Definitions ─────────────────────────────────────────
-
-# Maps scheme names to (weight_quant_fn, activation_quant_fn) pairs.
-# These match SmoothQuant Table 2 and extend beyond O1/O2/O3.
-QUANT_SCHEMES = {
-    # SmoothQuant original presets
-    "O1": {
-        "weight": "per_tensor",
-        "activation": "per_token_dynamic",
-        "description": "SmoothQuant-O1: per-tensor W, per-token dynamic A",
-    },
-    "O2": {
-        "weight": "per_tensor",
-        "activation": "per_tensor_dynamic",
-        "description": "SmoothQuant-O2: per-tensor W, per-tensor dynamic A",
-    },
-    "O3": {
-        "weight": "per_tensor",
-        "activation": "per_tensor_static",
-        "description": "SmoothQuant-O3: per-tensor W, per-tensor static A (fastest)",
-    },
-    # Additional schemes to explore in Task 1
-    "O1_pcw": {
-        "weight": "per_channel",
-        "activation": "per_token_dynamic",
-        "description": "Per-channel W, per-token dynamic A",
-    },
-    "O2_pcw": {
-        "weight": "per_channel",
-        "activation": "per_tensor_dynamic",
-        "description": "Per-channel W, per-tensor dynamic A",
-    },
-    "O3_pcw": {
-        "weight": "per_channel",
-        "activation": "per_tensor_static",
-        "description": "Per-channel W, per-tensor static A",
-    },
-    "naive_w8a8": {
-        "weight": "per_tensor",
-        "activation": "per_tensor_dynamic",
-        "description": "Naive W8A8 (no smoothing applied)",
-    },
-}
-
-
-def get_scheme_info(scheme_name: str) -> dict:
-    """Get quantization scheme configuration."""
-    if scheme_name not in QUANT_SCHEMES:
-        raise ValueError(
-            f"Unknown scheme '{scheme_name}'. "
-            f"Available: {list(QUANT_SCHEMES.keys())}"
-        )
-    return QUANT_SCHEMES[scheme_name]
+    return (x / scale).round().clamp(-qmax, qmax) * scale

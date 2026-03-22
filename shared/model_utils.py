@@ -34,7 +34,7 @@ def get_gpu_info() -> dict:
     return {
         "available": True,
         "name": props.name,
-        "memory_gb": round(props.total_mem / 1e9, 1),
+        "memory_gb": round(props.total_memory / 1e9, 1),
     }
 
 
