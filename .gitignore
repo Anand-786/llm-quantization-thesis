@@ -52,3 +52,5 @@ wandb/
 
 # Drive sync temp
 drive_sync/temp/
+
+smoothquant_repo/
