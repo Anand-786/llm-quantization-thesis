@@ -156,7 +156,7 @@ def main():
         "raw_results": results["results"],
         "duration_seconds": round(elapsed, 1),
         "seed": args.seed,
-        "lm_eval_version": getattr(lm_eval, "__version__", "unknown"),
+        "lm_eval_version": __import__("importlib.metadata", fromlist=["version"]).version("lm_eval"),
     }
 
     if args.save_json:

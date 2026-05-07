@@ -95,6 +95,22 @@ Findings:
 
 At `p = 0.999, alpha = 0.9` (the Experiment 2 winner), run O1, O2, D once each. Confirms (a) percentile + per-token A still gains, (b) percentile + per-tensor A degrades (the predicted residual-outlier failure mode).
 
+### Experiment 5: OPT-125M full percentile sweep at C scheme — ✅ RUN
+
+Cells: [opt_125m/percentile_sweep_cells.md](opt_125m/percentile_sweep_cells.md). Grid: 5p × 5α (step=0.2), 25 runs.
+
+|     p | α=0.1 | α=0.3 | α=0.5 | α=0.7 | α=0.9 |
+|------:|------:|------:|------:|------:|------:|
+| 0.999 | 27.88 | 27.70 | **27.6291** | 27.67 | 27.71 |
+| 0.995 | 27.85 | 27.72 | 27.76 | 27.78 | 27.80 |
+| 0.99  | 27.73 | 27.76 | 27.74 | 27.77 | 27.81 |
+| 0.95  | 27.84 | 27.73 | 27.80 | 27.74 | 27.74 |
+| 0.90  | 27.76 | 27.72 | 27.80 | 27.73 | 27.79 |
+
+Task 01 references: FP16 = 27.57, C/max ≈ 27.6, O1/max = 28.30, O2/max = 29.16.
+
+Findings: percentile + C effectively ties C/max (27.6291 vs ~27.6) and beats O1/max by 0.67 PPL. The sweep is almost flat — total spread across 25 cells is 0.25 PPL, no catastrophic collapse even at `(p=0.90, α=0.9) = 27.79`. Outlier pressure at 125M is small, so the smoothing-statistic choice doesn't matter much. This is a useful control datapoint and corroborates SmoothQuant's central premise that outlier-handling becomes load-bearing with scale.
+
 ### Experiment 4: OPT-2.7B percentile sweep at C scheme — ✅ RUN
 
 Cells: [opt_2_7b/percentile_sweep_cells.md](opt_2_7b/percentile_sweep_cells.md)
@@ -136,4 +152,4 @@ Findings:
 
 ## Status
 
-OPT-1.3B: ✅ Exp1 + Exp2 done · OPT-125M: ⏳ cells ready ([opt_125m/](opt_125m/)) · OPT-2.7B: ✅ done (cells [opt_2_7b/](opt_2_7b/)) · OPT-6.7B: ⏳ cells ready ([opt_6_7b/](opt_6_7b/)) · OPT-13B: ⏳ cells ready, A100 + Colab Pro+ High-RAM ([opt_13b/](opt_13b/))
+OPT-125M: ✅ done · OPT-1.3B: ✅ Exp1 + Exp2 done · OPT-2.7B: ✅ done · OPT-6.7B: ⏳ cells ready ([opt_6_7b/](opt_6_7b/)) · OPT-13B: ⏳ cells ready, A100 + Colab Pro+ High-RAM ([opt_13b/](opt_13b/))

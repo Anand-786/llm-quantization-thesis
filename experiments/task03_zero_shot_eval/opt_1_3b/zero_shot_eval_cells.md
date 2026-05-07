@@ -47,7 +47,7 @@ drive.mount('/content/drive')
 !ls -la smoothquant_repo/act_scales/ act_percentiles/opt-1.3b/
 !python -c "from smoothquant.smooth import smooth_lm; print('smoothquant OK')"
 !python -c "from experiments.task02_percentile_smoothing.percentile_smooth import smooth_lm_pct; print('percentile smooth OK')"
-!python -c "import lm_eval; print('lm_eval', lm_eval.__version__)"
+!python -c "import importlib.metadata; print('lm_eval', importlib.metadata.version('lm_eval'))"
 ```
 
 ---
