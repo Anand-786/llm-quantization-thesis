@@ -1,21 +1,26 @@
-# Task 03: Zero-Shot Eval — OPT-125M — Colab Cells
+# Task 03: Zero-Shot Eval — OPT-6.7B — Colab Cells
 
-Same 7-task suite and 5-config layout as the OPT-1.3B / 2.7B runs; see [../experiment_plan.md](../experiment_plan.md) for rationale. Only the alpha values and the model name differ.
+Compares the paper's recipe (O1/O2 + max-smoothing) against ours (C + percentile-smoothing) on the SmoothQuant paper's 7 zero-shot tasks. See [../experiment_plan.md](../experiment_plan.md) for rationale and config table.
 
 **Configs run here (in order):**
 1. FP16 (anchor)
 2. W8A8-naive (floor)
 3. SQ-O1 + max, α=0.5
 4. SQ-O2 + max, α=0.5
-5. SQ-C + percentile, α=0.5, p=0.999 (**ours** — Task 02 OPT-125M winner)
+5. SQ-C + percentile, α=?, p=? (**ours** — fill in from Task 02 OPT-6.7B winner)
 
 After the comparison table, an **optional** SQ-C + max cell is provided for ad-hoc analysis only — not part of the saved comparison.
 
-**Runtime estimate:** T4 ≈ 5–10 min/config × 5 ≈ 25–50 min total. 125M is small; HellaSwag dataset loading dominates.
+## Runtime / hardware
 
-**Prerequisites:**
-- `act_scales/opt-125m.pt` on Drive (from Task 01) — used by configs 3, 4.
-- `act_percentiles/opt-125m/p0.999.pt` on Drive (from Task 02) — used by config 5.
+**A100 required.** OPT-6.7B fp16 weights are ~13.3 GB; T4 (14.6 GB) cannot hold the model plus activations for batched zero-shot eval. CLAUDE.md Challenge #2 documents the same constraint for PPL eval at seq_len=2048; zero-shot uses shorter sequences but the model itself still doesn't fit comfortably on T4. Run on Colab Pro A100 (40 GB).
+
+Estimated time on A100: 5 configs × ~15–25 min ≈ 1.5–2 h. HellaSwag dominates.
+
+## Prerequisites
+
+- `act_scales/opt-6.7b.pt` on Drive (from Task 01) — used by configs 3, 4. **(Already generated per PROGRESS.md.)**
+- `act_percentiles/opt-6.7b/p<chosen>.pt` on Drive (from Task 02) — used by config 5. **Pending Task 02 OPT-6.7B sweep.** Update `P_PCT` and `ALPHA_PCT` in Cell 2 once that sweep picks a winner.
 
 ---
 
@@ -32,19 +37,20 @@ After the comparison table, an **optional** SQ-C + max cell is provided for ad-h
 
 import sys
 sys.path.insert(0, "/content/llm-quantization-thesis/smoothquant_repo")
-sys.path.insert(0, "/content/llm-quantization-thesis")
+sys.path.insert(0, "/content/llm-quantization-thesis")  # for experiments.task02_*
 
 from google.colab import drive
 drive.mount('/content/drive')
 
+# Copy Task 01 max scales + Task 02 percentile scales locally
 !mkdir -p smoothquant_repo/act_scales
-!cp /content/drive/MyDrive/thesis_results/act_scales/opt-125m.pt smoothquant_repo/act_scales/
+!cp /content/drive/MyDrive/thesis_results/act_scales/opt-6.7b.pt smoothquant_repo/act_scales/
 
-!mkdir -p act_percentiles/opt-125m
-!cp /content/drive/MyDrive/thesis_results/act_percentiles/opt-125m/*.pt act_percentiles/opt-125m/
+!mkdir -p act_percentiles/opt-6.7b
+!cp /content/drive/MyDrive/thesis_results/act_percentiles/opt-6.7b/*.pt act_percentiles/opt-6.7b/ 2>/dev/null || echo "(no percentile files yet — run Task 02 6.7B first)"
 
 !nvidia-smi
-!ls -la smoothquant_repo/act_scales/ act_percentiles/opt-125m/
+!ls -la smoothquant_repo/act_scales/ act_percentiles/opt-6.7b/ 2>/dev/null
 !python -c "from smoothquant.smooth import smooth_lm; print('smoothquant OK')"
 !python -c "from experiments.task02_percentile_smoothing.percentile_smooth import smooth_lm_pct; print('percentile smooth OK')"
 !python -c "import importlib.metadata; print('lm_eval', importlib.metadata.version('lm_eval'))"
@@ -54,23 +60,27 @@ drive.mount('/content/drive')
 
 ---
 
-## Cell 2: Config
+## Cell 2: Config — fill in P_PCT/ALPHA_PCT after Task 02 6.7B winner is known
 
 ```python
-MODEL = "facebook/opt-125m"
-SCRIPT = "experiments/task03_zero_shot_eval/opt_125m/run_zero_shot_t3.py"
-MAX_SCALES = "smoothquant_repo/act_scales/opt-125m.pt"
+# Paths
+MODEL = "facebook/opt-6.7b"
+SCRIPT = "experiments/task03_zero_shot_eval/opt_6_7b/run_zero_shot_t3.py"
+MAX_SCALES = "smoothquant_repo/act_scales/opt-6.7b.pt"
 
 # Alphas (paper default 0.5 for O1/O2)
 ALPHA_O1 = 0.5
 ALPHA_O2 = 0.5
 
-# Percentile-smoothing knobs — Task 02 OPT-125M winner
-P_PCT     = 0.999
-ALPHA_PCT = 0.5
-PCT_SCALES = f"act_percentiles/opt-125m/p{P_PCT}.pt"
+# Percentile-smoothing knobs — REPLACE with Task 02 OPT-6.7B winner before running Cell 7
+# Trend across the ladder (Task 02 memory): 1.3B → p=0.999/α=0.9; 2.7B → p=0.995/α=0.5.
+# Optimum drifts to lower α and lower p as scale grows; expect 6.7B to continue that trend.
+# Reasonable placeholder until the actual sweep finishes:
+P_PCT     = 0.99   # placeholder
+ALPHA_PCT = 0.5    # placeholder
+PCT_SCALES = f"act_percentiles/opt-6.7b/p{P_PCT}.pt"
 
-BATCH = 8
+BATCH = 8  # A100 has headroom; if rare OOM on HellaSwag drop to 4
 
 OUT_DIR = "results/task03"
 !mkdir -p {OUT_DIR}
@@ -86,12 +96,12 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
     --model_path {MODEL} \
     --config_label FP16 \
     --batch_size {BATCH} \
-    --save_json {OUT_DIR}/opt-125m_zeroshot_FP16.json
+    --save_json {OUT_DIR}/opt-6.7b_zeroshot_FP16.json
 ```
 
 ---
 
-## Cell 4: W8A8-naive
+## Cell 4: W8A8-naive (no smoothing, per-tensor W + per-tensor A)
 
 ```python
 !python {SCRIPT} \
@@ -100,12 +110,12 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
     --weight_quant per_tensor --act_quant per_tensor \
     --config_label W8A8-naive \
     --batch_size {BATCH} \
-    --save_json {OUT_DIR}/opt-125m_zeroshot_W8A8-naive.json
+    --save_json {OUT_DIR}/opt-6.7b_zeroshot_W8A8-naive.json
 ```
 
 ---
 
-## Cell 5: SQ-O1 + max smoothing
+## Cell 5: SQ-O1 + max smoothing (paper recipe)
 
 ```python
 !python {SCRIPT} \
@@ -116,12 +126,12 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
     --weight_quant per_tensor --act_quant per_token \
     --config_label SQ-O1-max \
     --batch_size {BATCH} \
-    --save_json {OUT_DIR}/opt-125m_zeroshot_SQ-O1-max.json
+    --save_json {OUT_DIR}/opt-6.7b_zeroshot_SQ-O1-max.json
 ```
 
 ---
 
-## Cell 6: SQ-O2 + max smoothing
+## Cell 6: SQ-O2 + max smoothing (paper recipe)
 
 ```python
 !python {SCRIPT} \
@@ -132,12 +142,12 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
     --weight_quant per_tensor --act_quant per_tensor \
     --config_label SQ-O2-max \
     --batch_size {BATCH} \
-    --save_json {OUT_DIR}/opt-125m_zeroshot_SQ-O2-max.json
+    --save_json {OUT_DIR}/opt-6.7b_zeroshot_SQ-O2-max.json
 ```
 
 ---
 
-## Cell 7: SQ-C + percentile (ours)
+## Cell 7: SQ-C + percentile smoothing (ours)
 
 ```python
 !python {SCRIPT} \
@@ -148,7 +158,7 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
     --weight_quant per_channel --act_quant per_token \
     --config_label SQ-C-pct \
     --batch_size {BATCH} \
-    --save_json {OUT_DIR}/opt-125m_zeroshot_SQ-C-pct.json
+    --save_json {OUT_DIR}/opt-6.7b_zeroshot_SQ-C-pct.json
 ```
 
 ---
@@ -157,7 +167,7 @@ print(f"Percentile config -> p={P_PCT}, alpha={ALPHA_PCT}, file={PCT_SCALES}")
 
 ```python
 !mkdir -p /content/drive/MyDrive/thesis_results/task03
-!cp {OUT_DIR}/opt-125m_zeroshot_*.json /content/drive/MyDrive/thesis_results/task03/
+!cp {OUT_DIR}/opt-6.7b_zeroshot_*.json /content/drive/MyDrive/thesis_results/task03/
 
 import json, glob
 
@@ -171,10 +181,11 @@ PRIMARY = {
     "rte":            "acc,none",
     "copa":           "acc,none",
 }
+
 ORDER = ["FP16", "W8A8-naive", "SQ-O1-max", "SQ-O2-max", "SQ-C-pct"]
 
 rows_by_label = {}
-for f in sorted(glob.glob(f"{OUT_DIR}/opt-125m_zeroshot_*.json")):
+for f in sorted(glob.glob(f"{OUT_DIR}/opt-6.7b_zeroshot_*.json")):
     r = json.load(open(f))
     label = r["config_label"]
     row = {"config": label}
@@ -206,10 +217,12 @@ for row in rows:
 
 ---
 
-## Reading the results
+## What to look for
 
-- 125M is the **most permissive** scale: outliers are weakest, every scheme has the most headroom. Task 01 already showed C wins 9/9 alphas on 125M PPL — expect the zero-shot accuracy gap between schemes to be **smaller** here than at 1.3B / 6.7B. The headline finding "percentile + C beats max + O1" needs to hold at 1.3B and ideally 6.7B for the thesis claim; 125M is a sanity / spectrum-completion data point.
-- LAMBADA + HellaSwag still the most reliable signals. RTE/COPA noisy.
+- **6.7B is the discriminating data point.** SmoothQuant's paper Table 1 shows per-tensor activation quantization drops to 39.9% accuracy at this scale — outliers are severe, so smoothing recipes have meaningful room to differentiate. Unlike 1.3B (where the W8A8 floor is −1.1pp from FP16) or 2.7B (where the floor is only −0.5pp), 6.7B should show a real W8A8-naive collapse and let the recipes spread out on accuracy.
+- **SQ-C-pct vs SQ-O1-max / SQ-O2-max**: ours vs paper recipe → headline comparison. Watch whether C-pct's PPL advantage from Task 02 finally translates to a clear zero-shot gap here.
+- **SQ-C-pct vs FP16**: how much of the FP16 ceiling does our compound recipe recover at the scale where it matters?
+- LAMBADA + HellaSwag are the most reliable signals. RTE/COPA are noisy (small val sets) — don't over-read.
 
 ---
 
@@ -226,5 +239,5 @@ Run only if you want to look at the C scheme's behaviour under max-smoothing as 
     --weight_quant per_channel --act_quant per_token \
     --config_label SQ-C-max \
     --batch_size {BATCH} \
-    --save_json /tmp/opt-125m_zeroshot_SQ-C-max.json
+    --save_json /tmp/opt-6.7b_zeroshot_SQ-C-max.json
 ```

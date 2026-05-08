@@ -64,9 +64,17 @@ We run 5 configs per model. The two anchors (FP16, W8A8-naive) frame the ceiling
 - **Alpha values:** O1/O2 at α=0.5 (paper default). C-pct from Task 02 OPT-2.7B winner: **p=0.995, α=0.5**.
 - **Prerequisite:** `act_scales/opt-2.7b.pt` (Task 01) and `act_percentiles/opt-2.7b/p0.995.pt` (Task 02) on Drive.
 
-### Priority 4 — OPT-6.7B, OPT-13B
+### Priority 4 — OPT-6.7B (A100 required)
 
-≥6.7B requires A100 (CLAUDE.md challenge #2). Cells per model land alongside each model's Task 02 percentile sweep output.
+- 6.7B fp16 weights are ~13.3 GB — does not fit T4 for batched zero-shot. Run on Colab Pro A100 (CLAUDE.md Challenge #2).
+- Estimated A100 runtime: 5 configs × ~15–25 min ≈ 1.5–2 h.
+- **Alpha values:** O1/O2 at α=0.5 (paper default). C-pct (α, p) **pending Task 02 OPT-6.7B sweep**; placeholder p=0.99, α=0.5 in cells file based on the 1.3B → 2.7B trend (optimum drifts to lower p and lower α as scale grows).
+- **Prerequisite:** `act_scales/opt-6.7b.pt` (Task 01 — already generated) and `act_percentiles/opt-6.7b/p<chosen>.pt` (Task 02 — pending) on Drive.
+- This is the discriminating data point: SmoothQuant Table 1 reports per-tensor activation accuracy collapses to 39.9% at 6.7B, so the W8A8-naive floor should drop substantially and let the smoothing recipes actually separate on zero-shot — unlike 2.7B where the floor was only −0.5pp from FP16.
+
+### Priority 5 — OPT-13B
+
+A100 required. Defer until 6.7B story is locked.
 
 ## What we expect
 
@@ -96,8 +104,11 @@ If SQ-C-pct beats both SQ-O1 (paper recipe) and SQ-C-max (Task 01 recipe), the t
 - OPT-1.3B run: ✅ complete (FP16, W8A8-naive, SQ-O1-max, SQ-O2-max, SQ-C-pct)
 - `opt_2_7b/zero_shot_eval_cells.md` ✅
 - `opt_2_7b/run_zero_shot_t3.py` ✅
-- OPT-2.7B run: ⏳
-- OPT-125M run: ⏳ (awaiting Task 02 125M winner)
+- OPT-2.7B run: ✅ complete
+- `opt_6_7b/zero_shot_eval_cells.md` ✅
+- `opt_6_7b/run_zero_shot_t3.py` ✅
+- OPT-6.7B run: ⏳ (A100 + Task 02 6.7B winner needed)
+- OPT-125M run: ✅ complete
 
 ## Results — OPT-1.3B
 
@@ -118,3 +129,43 @@ C+pct uses (α=0.9, p=0.95) — Task 02 WikiText-2 winner for OPT-1.3B was p=0.9
 - **W8A8-naive vs FP16**: LAMBADA acc drops 3.55pp; HellaSwag −2.0pp, PIQA −1.6pp, WinoGrande −2.3pp, OpenBookQA −1.6pp. The outlier-sensitivity floor that smoothing recovers.
 - **Per-task** (vs O1-max): C+pct wins on HellaSwag, PIQA, WinoGrande, RTE, COPA; ties LAMBADA; loses OpenBookQA. RTE/COPA are noisy (small val sets) — main signal lives in LAMBADA / HellaSwag / PIQA / WinoGrande.
 - A non-fatal `Failed to get model SHA` warning in the log is cosmetic (results JSON provenance only); metrics unaffected.
+
+## Results — OPT-125M
+
+C+pct uses (α=0.5, p=0.999) — Task 02 OPT-125M winner.
+
+| Config | LAMBADA | HellaSwag | PIQA | WinoGrande | OpenBookQA | RTE | COPA | Avg |
+|---|---|---|---|---|---|---|---|---|
+| FP16              | 0.3788 | 0.3135 | 0.6192 | 0.5020 | 0.2780 | 0.5018 | 0.6900 | 0.4690 |
+| W8A8-naive        | 0.3538 | 0.3104 | 0.6159 | 0.4972 | 0.2680 | 0.4838 | 0.6300 | 0.4513 |
+| SQ-O1-max         | 0.3829 | 0.3136 | 0.6181 | 0.4988 | 0.2740 | 0.4765 | 0.6800 | 0.4634 |
+| SQ-O2-max         | 0.3707 | 0.3121 | 0.6148 | 0.5083 | 0.2600 | 0.4729 | 0.6500 | 0.4555 |
+| **SQ-C-pct (ours)** | **0.3749** | **0.3136** | **0.6197** | **0.4941** | **0.2720** | **0.4874** | **0.7000** | **0.4660** |
+
+### Notes
+
+- **W8A8 floor is real at 125M**: −1.77pp from FP16 (0.4513 vs 0.4690), deeper in absolute pp than 1.3B (−1.10) or 2.7B (−0.54). Why a small model would have a deeper floor than 2.7B is counterintuitive (outliers should grow with scale, not shrink) — most likely because base accuracy is much closer to chance at 125M, so a fixed amount of quantization noise has relatively more bite on borderline predictions. Don't make a strong scale-trend claim from one seed.
+- **Ordering on avg**: FP16 (0.4690) > C-pct (0.4660) > O1-max (0.4634) > O2-max (0.4555) > naive (0.4513). C-pct beats O1 by +0.26pp on avg, sits 0.30pp below FP16.
+- **Recovery from W8A8 floor**: C-pct +1.47pp (83% of floor), O1 +1.21pp (68%), O2 +0.42pp (24%). C-pct recovers best.
+- **Per-task C-pct vs O1-max**: ties HellaSwag; small wins on PIQA (+0.16) and big wins on RTE (+1.09) and COPA (+2.0); losses on LAMBADA (−0.80), WinoGrande (−0.47), OpenBookQA (−0.20). The +0.26pp avg gain is carried by the noisy small tasks (RTE 277 items, COPA 100 items). On the more reliable LAMBADA / WinoGrande, O1 actually edges out — be honest about this in the writeup.
+
+## Results — OPT-2.7B
+
+C+pct uses (α=0.5, p=0.995) — Task 02 OPT-2.7B winner.
+
+| Config | LAMBADA | HellaSwag | PIQA | WinoGrande | OpenBookQA | RTE | COPA | Avg |
+|---|---|---|---|---|---|---|---|---|
+| FP16              | 0.6361 | 0.6063 | 0.7481 | 0.6093 | 0.3520 | 0.5523 | 0.7700 | 0.6106 |
+| W8A8-naive        | 0.6577 | 0.5744 | 0.7231 | 0.6069 | 0.3480 | 0.5162 | 0.8100 | 0.6052 |
+| SQ-O1-max         | 0.6522 | 0.6012 | 0.7497 | 0.6125 | 0.3460 | 0.5343 | 0.7600 | 0.6080 |
+| SQ-O2-max         | 0.6499 | 0.5999 | 0.7476 | 0.6014 | 0.3460 | 0.5235 | 0.7600 | 0.6040 |
+| **SQ-C-pct (ours)** | **0.6420** | **0.6035** | **0.7476** | **0.6014** | **0.3500** | **0.5379** | **0.7600** | **0.6060** |
+
+### Notes
+
+- **The W8A8 floor is shallow at 2.7B**: W8A8-naive avg (0.6052) is only −0.54pp below FP16 (0.6106). Compare to 1.3B where naive dropped −1.10pp. There's much less of a gap for smoothing to recover at this scale.
+- **Ordering on avg**: FP16 (0.6106) > O1-max (0.6080) > C-pct (0.6060) > naive (0.6052) > O2-max (0.6040). All four quantized configs sit within ~0.7pp of FP16 — within typical zero-shot noise for these task sizes.
+- **C-pct does NOT beat O1 at 2.7B** (−0.20pp on avg) — opposite sign from 1.3B (+0.21pp). The two model points are within zero-shot noise of each other; the cleaner PPL signal from Task 02 (C-pct 12.34 ≈ FP16 12.3425, vs O1/max winner) does not translate cleanly to coarse zero-shot accuracy at 2.7B.
+- **LAMBADA anomaly**: W8A8-naive *beats* FP16 on LAMBADA (+2.16pp). All quantized configs beat FP16 on LAMBADA at 2.7B. At 1.3B the same task showed the expected −3.55pp naive drop. Possible reading: at 2.7B activation outliers are still moderate (not yet at 6.7B-style severity), and small numerical perturbations from quantization can flip marginal greedy next-token predictions to net-positive on aggregate. Worth flagging in the writeup but don't over-interpret a single seed; consider re-running with 2–3 seeds for the LAMBADA row alone if this becomes load-bearing for the thesis story.
+- **Per-task vs O1-max**: C-pct loses LAMBADA (−1.0pp) and WinoGrande (−1.1pp); wins HellaSwag (+0.23), OpenBookQA (+0.40), RTE (+0.36); ties PIQA and COPA. Mixed.
+- **Takeaway for the thesis**: at 1.3B the compound recipe shows a small but consistent advantage on coarse zero-shot; at 2.7B the W8A8 floor is too shallow for any smoothing recipe to differentiate on avg. The clean signal lives in PPL (Task 01/02), not zero-shot at this scale. The 6.7B run on A100 is where outliers become severe enough for the zero-shot test to discriminate.
