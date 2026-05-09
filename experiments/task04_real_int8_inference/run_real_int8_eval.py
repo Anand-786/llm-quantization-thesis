@@ -30,7 +30,12 @@ def model_size_mb(model):
 
 @torch.no_grad()
 def eval_wikitext_ppl(model, tokenizer, seq_len=2048, device="cuda"):
-    """Task 01-style WikiText-2 PPL: concat test split, slide non-overlapping windows."""
+    """Task 01-style WikiText-2 PPL: concat test split, slide non-overlapping windows.
+
+    Also tracks peak VRAM during the forward passes — this is the thesis's
+    actual memory claim, since activation buffers (not just weights) are what
+    INT8 inference shrinks vs FP16.
+    """
     from datasets import load_dataset
     ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
     text = "\n\n".join(ds["text"])
@@ -39,13 +44,32 @@ def eval_wikitext_ppl(model, tokenizer, seq_len=2048, device="cuda"):
     n_windows = n_tokens // seq_len
     nlls = []
     model.eval()
+
+    # Reset peak-memory counter so we measure only what this eval allocates
+    # *on top of* the loaded model. Total peak VRAM = model weights + this peak.
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats(device)
+    baseline_alloc = torch.cuda.memory_allocated(device)
+
     for i in range(n_windows):
         ids = enc[:, i * seq_len : (i + 1) * seq_len]
         out = model(ids, labels=ids)
         # out.loss is mean NLL over the window
         nlls.append(out.loss.float() * seq_len)
+
+    torch.cuda.synchronize()
+    peak_alloc = torch.cuda.max_memory_allocated(device)
+    peak_reserved = torch.cuda.max_memory_reserved(device)
+    activation_peak = peak_alloc - baseline_alloc
+
     ppl = torch.exp(torch.stack(nlls).sum() / (n_windows * seq_len))
-    return ppl.item()
+    return {
+        "ppl": ppl.item(),
+        "peak_vram_alloc_mb": peak_alloc / (1024 ** 2),
+        "peak_vram_reserved_mb": peak_reserved / (1024 ** 2),
+        "baseline_alloc_mb": baseline_alloc / (1024 ** 2),
+        "activation_peak_mb": activation_peak / (1024 ** 2),
+    }
 
 
 @torch.no_grad()
@@ -136,9 +160,17 @@ def main():
     }
 
     if not args.skip_ppl:
-        ppl = eval_wikitext_ppl(model, tokenizer, seq_len=args.seq_len_ppl)
-        print(f"[{args.config_label}] wikitext-2 PPL @ {args.seq_len_ppl}: {ppl:.4f}")
-        result["wikitext2_ppl"] = ppl
+        m = eval_wikitext_ppl(model, tokenizer, seq_len=args.seq_len_ppl)
+        print(f"[{args.config_label}] wikitext-2 PPL @ {args.seq_len_ppl}: {m['ppl']:.4f}")
+        print(f"[{args.config_label}] peak VRAM alloc:    {m['peak_vram_alloc_mb']:.1f} MB")
+        print(f"[{args.config_label}] peak VRAM reserved: {m['peak_vram_reserved_mb']:.1f} MB")
+        print(f"[{args.config_label}] activation peak:    {m['activation_peak_mb']:.1f} MB "
+              f"(peak_alloc - model_baseline)")
+        result["wikitext2_ppl"] = m["ppl"]
+        result["peak_vram_alloc_mb"] = m["peak_vram_alloc_mb"]
+        result["peak_vram_reserved_mb"] = m["peak_vram_reserved_mb"]
+        result["activation_peak_mb"] = m["activation_peak_mb"]
+        result["baseline_alloc_mb"] = m["baseline_alloc_mb"]
 
     if not args.skip_lambada:
         acc, lat = eval_lambada(model, tokenizer, n_samples=args.lambada_samples)

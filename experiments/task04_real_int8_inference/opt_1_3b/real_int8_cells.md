@@ -26,7 +26,17 @@ Demonstrates the actual 50% memory reduction (and latency win) of INT8 inference
 !git clone https://github.com/mit-han-lab/smoothquant.git smoothquant_repo
 !pip uninstall smoothquant -y
 !cd smoothquant_repo && pip install -e .
-!pip install -q transformers accelerate datasets zstandard tqdm
+# All four pinned together so the resolver sees the full constraint set at once.
+# Pinning them one at a time drags conflicting huggingface-hub versions each round.
+# Known-good quartet from Oct-2023 when transformers 4.34.1 shipped.
+# Why these pins:
+#   - smoothquant.opt references OPTDecoder._prepare_decoder_attention_mask,
+#     removed in transformers >=4.36 (unified into AttentionMaskConverter).
+#   - datasets >=3.0 dropped script-based loaders (same constraint as Task 03).
+#   - huggingface-hub and tokenizers must match transformers 4.34.1's range.
+!pip install -q "transformers==4.34.1" "datasets==2.14.7" \
+    "huggingface-hub==0.17.3" "tokenizers==0.14.1" \
+    accelerate zstandard tqdm
 
 # torch-int: CUTLASS INT8 GEMM kernels
 # torch-int's repo is from 2023 and needs two patches to build on 2026 Colab:
@@ -55,8 +65,17 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "7.5;8.0"  # T4=7.5, A100=8.0
 !bash environment.sh || true   # pip deps; some lines may fail on Colab — ok
 !bash build_cutlass.sh
 
+# Patch 3: torch-int's setup.py forgets to add CUTLASS headers to the extension's
+# include path → nvcc fails on `#include <cutlass/core_io.h>`. Inject via CPATH
+# (honored by both gcc and nvcc).
+os.environ["CPATH"] = (
+    "/content/torch-int/submodules/cutlass/include:"
+    "/content/torch-int/submodules/cutlass/tools/util/include:"
+    + os.environ.get("CPATH", "")
+)
+
 # Build the python extension
-!python setup.py install 2>&1 | tail -50
+!CPATH=$CPATH python setup.py install 2>&1 | tail -60
 
 # Verify the CUDA extension actually compiled
 !python -c "import torch_int._CUDA; print('torch_int._CUDA OK')"
@@ -74,12 +93,28 @@ drive.mount('/content/drive')
 !mkdir -p act_percentiles/opt-1.3b
 !cp /content/drive/MyDrive/thesis_results/act_percentiles/opt-1.3b/p0.999.pt act_percentiles/opt-1.3b/
 
-# Pile val set for static calibration (Path B)
-!mkdir -p dataset
-!cp /content/drive/MyDrive/thesis_results/datasets/val.jsonl.zst dataset/ 2>/dev/null || \
-   (echo "Pile val.jsonl.zst not on Drive. Downloading..." && \
-    wget -q https://mystic.the-eye.eu/public/AI/pile/val.jsonl.zst -O dataset/val.jsonl.zst && \
-    cp dataset/val.jsonl.zst /content/drive/MyDrive/thesis_results/datasets/)
+# Pile val set for static calibration (Path B).
+# The-eye mirror is dead, so we build a val.jsonl.zst from `NeelNanda/pile-10k`
+# on HuggingFace (10k Pile samples; we only need 512 for calibration).
+!mkdir -p dataset /content/drive/MyDrive/thesis_results/datasets
+import os
+if os.path.exists("/content/drive/MyDrive/thesis_results/datasets/val.jsonl.zst"):
+    !cp /content/drive/MyDrive/thesis_results/datasets/val.jsonl.zst dataset/
+    print("Loaded cached Pile sample from Drive.")
+else:
+    print("Building Pile sample from NeelNanda/pile-10k on HuggingFace...")
+    !pip install -q zstandard
+    import json, zstandard as zstd
+    from datasets import load_dataset
+    ds = load_dataset("NeelNanda/pile-10k", split="train")
+    cctx = zstd.ZstdCompressor(level=3)
+    with open("dataset/val.jsonl.zst", "wb") as fh:
+        with cctx.stream_writer(fh) as zf:
+            for ex in ds:
+                zf.write((json.dumps({"text": ex["text"]}) + "\n").encode("utf-8"))
+    !cp dataset/val.jsonl.zst /content/drive/MyDrive/thesis_results/datasets/
+    print("Saved val.jsonl.zst to Drive for reuse.")
+!ls -lh dataset/val.jsonl.zst
 
 !nvidia-smi
 !python -c "import torch_int; print('torch-int OK')"
@@ -124,6 +159,7 @@ print(f"Ours: smooth_lm_pct  p={P_PCT}  alpha={ALPHA_PCT}  scales={PCT_SCALES}")
     --model_path {MODEL} \
     --tokenizer_path {MODEL} \
     --config_label FP16 \
+    --skip_lambada \
     --save_json {OUT_DIR}/opt-1.3b_realint8_FP16.json
 ```
 
@@ -137,6 +173,7 @@ print(f"Ours: smooth_lm_pct  p={P_PCT}  alpha={ALPHA_PCT}  scales={PCT_SCALES}")
     --model_path {HF_INT8} \
     --tokenizer_path {MODEL} \
     --config_label INT8-paper \
+    --skip_lambada \
     --save_json {OUT_DIR}/opt-1.3b_realint8_INT8-paper.json
 ```
 
@@ -170,6 +207,7 @@ This applies `smooth_lm_pct` then runs static per-tensor calibration on the Pile
     --model_path {LOCAL_INT8} \
     --tokenizer_path {MODEL} \
     --config_label INT8-ours \
+    --skip_lambada \
     --save_json {OUT_DIR}/opt-1.3b_realint8_INT8-ours.json
 ```
 
@@ -187,7 +225,8 @@ This applies `smooth_lm_pct` then runs static per-tensor calibration on the Pile
 import json, glob
 
 ORDER = ["FP16", "INT8-paper", "INT8-ours"]
-COLS  = ["size_mb", "wikitext2_ppl", "lambada_last_token_acc", "lambada_latency_ms_per_sample"]
+COLS  = ["size_mb", "peak_vram_alloc_mb", "activation_peak_mb",
+         "wikitext2_ppl", "lambada_last_token_acc", "lambada_latency_ms_per_sample"]
 
 rows_by_label = {}
 for f in sorted(glob.glob(f"{OUT_DIR}/opt-1.3b_realint8_*.json")):
@@ -210,11 +249,26 @@ for label in ORDER:
 # Headline numbers for the thesis
 fp16 = rows_by_label.get("FP16", {})
 ours = rows_by_label.get("INT8-ours", {})
+paper = rows_by_label.get("INT8-paper", {})
 if fp16 and ours:
-    ratio = ours["size_mb"] / fp16["size_mb"]
-    speedup = fp16.get("lambada_latency_ms_per_sample", 0) / max(ours.get("lambada_latency_ms_per_sample", 1), 1e-9)
-    print(f"\nMemory: INT8-ours / FP16 = {ratio*100:.1f}%  (lower is better; ~50% expected)")
-    print(f"Latency speedup: {speedup:.2f}x")
+    print()
+    print(f"--- Headline ratios (lower = better, ~50% is the SmoothQuant target) ---")
+    print(f"  Static model size:  INT8-ours / FP16 = "
+          f"{ours['size_mb']/fp16['size_mb']*100:.1f}%")
+    if "peak_vram_alloc_mb" in fp16 and "peak_vram_alloc_mb" in ours:
+        print(f"  Peak inference VRAM: INT8-ours / FP16 = "
+              f"{ours['peak_vram_alloc_mb']/fp16['peak_vram_alloc_mb']*100:.1f}%  "
+              f"({ours['peak_vram_alloc_mb']:.0f} MB vs {fp16['peak_vram_alloc_mb']:.0f} MB)")
+    if "activation_peak_mb" in fp16 and "activation_peak_mb" in ours:
+        print(f"  Activation peak:     INT8-ours / FP16 = "
+              f"{ours['activation_peak_mb']/fp16['activation_peak_mb']*100:.1f}%  "
+              f"({ours['activation_peak_mb']:.0f} MB vs {fp16['activation_peak_mb']:.0f} MB)")
+    if paper:
+        print()
+        print(f"--- PPL: ours vs paper (lower = better, FP16={fp16.get('wikitext2_ppl', 0):.2f}) ---")
+        print(f"  Paper O3+max:    {paper.get('wikitext2_ppl', 0):.4f}")
+        print(f"  Ours O3+pct:     {ours.get('wikitext2_ppl', 0):.4f}  "
+              f"(delta vs paper: {ours.get('wikitext2_ppl', 0) - paper.get('wikitext2_ppl', 0):+.4f})")
 ```
 
 ---
