@@ -29,16 +29,37 @@ Demonstrates the actual 50% memory reduction (and latency win) of INT8 inference
 !pip install -q transformers accelerate datasets zstandard tqdm
 
 # torch-int: CUTLASS INT8 GEMM kernels
+# torch-int's repo is from 2023 and needs two patches to build on 2026 Colab:
+#   (1) the cutlass submodule URL is SSH (git@github.com:...) which fails without an SSH key
+#       → rewrite to HTTPS before submodule update
+#   (2) setup.py hard-codes -std=c++14 but PyTorch 2.x requires C++17
+#       → sed setup.py to c++17
 %cd /content
-!git clone --recursive https://github.com/Guangxuan-Xiao/torch-int.git
+# clone WITHOUT --recursive so the SSH submodule doesn't fail the whole clone
+!git clone https://github.com/Guangxuan-Xiao/torch-int.git
 %cd /content/torch-int
-# the build script needs the conda env's CUDA; on Colab we set TORCH_CUDA_ARCH_LIST.
-# T4 = 7.5, A100 = 8.0. We list both so this notebook runs on either.
+
+# Patch 1: rewrite SSH submodule URL → HTTPS, then init submodules
+!git config --global url."https://github.com/".insteadOf "git@github.com:"
+!sed -i 's|git@github.com:|https://github.com/|g' .gitmodules
+!git submodule sync
+!git submodule update --init --recursive
+
+# Patch 2: C++14 → C++17 (setup.py and any kernel build flags)
+!sed -i 's/c++14/c++17/g' setup.py
+!grep -rl 'c++14' torch_int/ submodules/cutlass/CMakeLists.txt 2>/dev/null | xargs -r sed -i 's/c++14/c++17/g' || true
+
+# Build CUTLASS test wrappers (build_cutlass.sh runs cmake on submodules/cutlass)
 import os
-os.environ["TORCH_CUDA_ARCH_LIST"] = "7.5;8.0"
-!bash environment.sh || true   # creates pip deps; some lines may fail on Colab — ok
+os.environ["TORCH_CUDA_ARCH_LIST"] = "7.5;8.0"  # T4=7.5, A100=8.0
+!bash environment.sh || true   # pip deps; some lines may fail on Colab — ok
 !bash build_cutlass.sh
-!python setup.py install
+
+# Build the python extension
+!python setup.py install 2>&1 | tail -50
+
+# Verify the CUDA extension actually compiled
+!python -c "import torch_int._CUDA; print('torch_int._CUDA OK')"
 
 %cd /content/llm-quantization-thesis
 
@@ -65,7 +86,7 @@ drive.mount('/content/drive')
 !python -c "from smoothquant.opt import Int8OPTForCausalLM; print('Int8OPTForCausalLM OK')"
 ```
 
-> **If `torch-int` build fails:** the most common cause is a CUDA-toolkit/PyTorch mismatch on Colab. Check `nvcc --version` vs `torch.version.cuda`. If they differ, you may need to `apt install` the matching CUDA toolkit before `build_cutlass.sh`. As a fallback, this task can be skipped on this runtime — the fake-quant numbers from Tasks 01–03 still drive the thesis story; Task 04 is purely the deployment-side demo.
+> **If `torch-int` build still fails after these patches:** the next likely walls are CUDA 12.8 / ATen API mismatches (the repo was last updated in 2023 against Torch 2.0 / CUDA 11.x). Symptoms: undefined symbols, missing `at::` overloads, or CUTLASS template errors deep in the build log. If we hit those, stop here and we'll pivot to **torchao** (`int8_dynamic_activation_int8_weight`) which uses native PyTorch int8 ops and runs cleanly on Colab — it gives a real (if less aggressive) peak-VRAM measurement that still demonstrates the activation-memory point.
 
 ---
 
