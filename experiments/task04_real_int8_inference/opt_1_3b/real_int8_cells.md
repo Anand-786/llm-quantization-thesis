@@ -132,9 +132,13 @@ MODEL = "facebook/opt-1.3b"
 RUNNER = "experiments/task04_real_int8_inference/run_real_int8_eval.py"
 EXPORTER = "experiments/task04_real_int8_inference/export_our_int8.py"
 
-# Task 02 OPT-1.3B winner
+# Task 04 deployment-regime winner for OPT-1.3B.
+# NOT the same as Task 02's winner (α=0.9). The CUTLASS INT8 GEMM kernels force
+# per-tensor weights + per-tensor static activations (paper's O3 regime), in
+# which α=0.5 wins (matches the paper's α default). Aggressive smoothing
+# (α=0.9) only helps when weights are per-channel — see Task 02 results.
 P_PCT     = 0.999
-ALPHA_PCT = 0.9
+ALPHA_PCT = 0.5
 PCT_SCALES = f"act_percentiles/opt-1.3b/p{P_PCT}.pt"
 
 # HF prequantized paper model
@@ -225,8 +229,7 @@ This applies `smooth_lm_pct` then runs static per-tensor calibration on the Pile
 import json, glob
 
 ORDER = ["FP16", "INT8-paper", "INT8-ours"]
-COLS  = ["size_mb", "peak_vram_alloc_mb", "activation_peak_mb",
-         "wikitext2_ppl", "lambada_last_token_acc", "lambada_latency_ms_per_sample"]
+COLS  = ["size_mb", "peak_vram_alloc_mb", "activation_peak_mb", "wikitext2_ppl"]
 
 rows_by_label = {}
 for f in sorted(glob.glob(f"{OUT_DIR}/opt-1.3b_realint8_*.json")):

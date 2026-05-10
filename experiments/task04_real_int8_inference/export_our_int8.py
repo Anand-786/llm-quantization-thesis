@@ -17,7 +17,14 @@ kernels — see experiment_plan.md for context.
 """
 import argparse
 import os
+import sys
 from pathlib import Path
+
+# Make the repo root importable so `from experiments.task02_...` works when
+# this script is launched as `python experiments/task04_.../export_our_int8.py`.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import torch
 from transformers import AutoTokenizer

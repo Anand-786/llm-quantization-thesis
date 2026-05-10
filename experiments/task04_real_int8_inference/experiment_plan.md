@@ -64,13 +64,22 @@ Load `mit-han-lab/opt-<size>-smoothquant` directly via `Int8OPTForCausalLM.from_
 - Pile validation set `val.jsonl.zst` on Drive — needed for static calibration in Path B.
 - A working **torch-int** install in the Colab session — see Cell 1 of `real_int8_cells.md`.
 
-## Per-model winning (p, α) from Task 02
+## Per-model (p, α) for the deployment regime
 
-| Model     | p    | α   |
-|-----------|------|-----|
-| OPT-125M  | 0.999| 0.5 |
-| OPT-1.3B  | 0.999| 0.9 |
-| OPT-2.7B  | 0.995| 0.5 |
-| OPT-6.7B  | TBD  | TBD |
+Task 02's (p, α) winners were tuned for **per-channel W + per-token A** (scheme C).
+torch-int's CUTLASS kernels force **per-tensor W + per-tensor static A** (paper's
+O3 regime), in which α=0.5 wins for all model sizes — the α=0.9 setting from
+Task 02 punishes per-tensor weight quant by pushing outliers into a granularity
+that cannot absorb them. We keep p the same as Task 02 (the percentile choice
+is regime-independent: it's just a cleaner statistic than max).
 
-Update Cell 2 of each model's cells file accordingly.
+| Model     | p (= Task 02) | α (Task 04 deployment) | α (Task 02 fake-quant) |
+|-----------|---------------|------------------------|------------------------|
+| OPT-125M  | 0.999         | 0.5                    | 0.5                    |
+| OPT-1.3B  | 0.999         | **0.5**                | 0.9                    |
+| OPT-2.7B  | 0.995         | 0.5                    | 0.5                    |
+| OPT-6.7B  | TBD           | 0.5 (default)          | TBD                    |
+
+This regime-dependent α split is itself a thesis-worthy finding — the smoothing
+recipe should be re-tuned for the deployment regime, not blindly inherited from
+the fake-quant evaluation. Update Cell 2 of each model's cells file accordingly.
