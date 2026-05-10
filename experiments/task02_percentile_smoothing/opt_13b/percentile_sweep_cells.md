@@ -1,4 +1,4 @@
-# Task 02: Percentile Sweep — C scheme on OPT-13B (A100 + High-RAM)
+# Task 02: Percentile Sweep — C scheme on OPT-13B (A100-80)
 
 Sweeps the smoothing percentile `p` and SmoothQuant `alpha` against scheme C (per-channel W + per-token A — the Task 01 winner).
 
@@ -10,9 +10,8 @@ Grid (full Task 02 sweep convention):
 `p = 1.0` is intentionally excluded (top-K calibration's per-channel max is fp16-noisy). The max-smoothing reference baseline is Task 01's `alpha_sweep_results.ipynb` for OPT-13B once that exists.
 
 Hardware:
-- **GPU**: A100-40 (or A100-80). The sweep loads OPT-13B in **bfloat16** for evaluation (matching the smaller-model sweeps), so peak GPU during eval is ~26 GB model + ~3-5 GB activations at seq_len=2048 ≈ 30 GB. Fits A100-40.
-- **CPU RAM**: a Pro+ High-RAM runtime is recommended. Each model reload between cells will briefly peak host RAM at ~25 GB.
-- **A100-40 vs A100-80**: A100-40 works for both calibration and sweep but you'll be running close to the GPU limit. A100-80 gives a clean ~50 GB headroom.
+- **GPU**: A100-80. Each sweep run loads OPT-13B in **bfloat16** for evaluation (matching the smaller-model sweeps), so peak GPU during eval is ~26 GB model + ~3-5 GB activations at seq_len=2048 ≈ 30 GB. Plenty of headroom on the 80 GB card.
+- **CPU RAM**: Colab Pro High-RAM (~51 GB) is enough. Model reloads between cells briefly peak host RAM at ~25 GB.
 
 Prereq: run [generate_act_percentiles_cells.md](generate_act_percentiles_cells.md) once first to produce `act_percentiles/opt-13b/p<value>.pt` files on Drive.
 

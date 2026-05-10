@@ -12,6 +12,20 @@ Plan: [experiment_plan.md](experiment_plan.md)
 
 Expected best pairing: **percentile + C scheme**, because per-token activation quantization tolerates the residual outliers that percentile-smoothing leaves above the threshold.
 
+## Naive W8A8 collapse across the model ladder (verification, FP16-anchored)
+
+Same per-tensor W + per-tensor A, no smoothing. Numbers from each model's single-session verification run.
+
+| Model    | FP16    | Naive W8A8 | Δ vs FP16   |
+|----------|--------:|-----------:|------------:|
+| OPT-125M | 27.5684 | 30.2257    | +2.66       |
+| OPT-1.3B | 14.4677 | 15.5867    | +1.12       |
+| OPT-2.7B | 12.3449 | 13.4438    | +1.10       |
+| OPT-6.7B | 10.6732 | 25.9135    | **+15.24**  |
+| OPT-13B  |  9.9439 | 4325.6772  | **+4315.73** |
+
+The collapse is super-exponential past 2.7B — at 13B the model is outputting noise without smoothing.
+
 ## Sweep grid convention (from OPT-6.7B onward)
 
 Every Task 02 sweep on a new model uses the full grid in one notebook run:
@@ -91,6 +105,23 @@ Findings:
 - **No optimum outside the step=0.2 grid.** α=0.6 at p=0.999 is competitive (14.6298) but does not beat α=0.9. Future Task 02 sweeps on bigger models can stay on the `{0.1, 0.3, 0.5, 0.7, 0.9}` step=0.2 grid.
 - **Thesis-relevant pattern**: high p (conservative percentile, top ~0.1% of |X| ≈ paper's §5.2 2% clip intuition) gives both lower PPL *and* stronger alpha-stability. Low p (aggressive, top 10%) trades alpha-stability for nothing — its peak is no better than the conservative one's plateau, and the failure modes off-peak are severe.
 
+#### Single-session verification (cross-config, FP16-anchored)
+
+Cells: [`experiments/verification/opt_1_3b/full_table_cells.md`](../verification/opt_1_3b/full_table_cells.md). One Colab kernel, all 8 configs (FP16, naive, O1/max, O2/max, C/max, C/pct winner, O1+per-layer-α, C+per-layer-α) under one `Evaluator` instance — within-table deltas are noise-free. Use these numbers in the thesis when comparing rows across schemes; the per-experiment sweeps above stay authoritative for *within-grid* shape but their absolute PPLs are not directly comparable across notebooks.
+
+| # | Config | PPL | Δ vs FP16 |
+|---|---|---:|---:|
+| 1 | FP16 | 14.4677 | +0.0000 |
+| 2 | Naive W8A8 (per-tensor W & A, no smoothing) | 15.5867 | +1.1190 |
+| 3 | O1 max α=0.5 | 14.8333 | +0.3656 |
+| 4 | O2 max α=0.5 | 14.8335 | +0.3658 |
+| 5 | **C pct p=0.999, α=0.9** | **14.6248** | **+0.1571** |
+| 6 | C max α=0.5 | 14.7710 | +0.3033 |
+| 7 | O1 + per-layer α (Task 05) | 14.6949 | +0.2272 |
+| 8 | C + per-layer α (Task 05) | 14.6281 | +0.1604 |
+
+C/pct (winner from the original sweep above) lands at **+0.1571 above FP16** vs C/max at +0.3033 — a **0.146 PPL improvement** from swapping max for percentile under matched eval. C+per-layer-α reaches the same floor (+0.1604) via a completely different route, confirming both knobs target the same outlier-driven instability. Verification-run number for C/pct (14.6248) is within ~0.008 PPL of the in-grid 14.6167 above, i.e. bf16 run-to-run noise on the same config — the *ranking* and the headline deltas are stable.
+
 ### Experiment 3: cross-scheme check — ⏳ PLANNED
 
 At `p = 0.999, alpha = 0.9` (the Experiment 2 winner), run O1, O2, D once each. Confirms (a) percentile + per-token A still gains, (b) percentile + per-tensor A degrades (the predicted residual-outlier failure mode).
@@ -135,6 +166,57 @@ Findings:
 - **α=0.5 column is a near-FP16 plateau.** Four of five p values give PPL ≤ 12.45 at α=0.5; three are within 0.01 of FP16.
 - **The "low p + high α" failure mode is catastrophic at scale.** `p=0.95, α=0.9 = 323.79`; `p=0.90, α=0.9 = 1765.90`. On 1.3B the same cells gave 15.13 and 15.90 — bad but recoverable. At 2.7B the model collapses entirely. This is a thesis-relevant safety-boundary observation: the percentile-smoothing failure surface is sharp, not gradual, and gets sharper with model size.
 
+#### Single-session verification (cross-config, FP16-anchored)
+
+Cells: [`experiments/verification/opt_2_7b/full_table_cells.md`](../verification/opt_2_7b/full_table_cells.md). One Colab kernel, all 8 configs under one `Evaluator` instance.
+
+| # | Config | PPL | Δ vs FP16 |
+|---|---|---:|---:|
+| 1 | FP16 | 12.3449 | +0.0000 |
+| 2 | Naive W8A8 (per-tensor W & A, no smoothing) | 13.4438 | +1.0989 |
+| 3 | O1 max α=0.5 | 12.3885 | +0.0436 |
+| 4 | O2 max α=0.5 | 12.4142 | +0.0693 |
+| 5 | **C pct p=0.995, α=0.5** | **12.3564** | **+0.0115** |
+| 6 | C max α=0.5 | 12.3613 | +0.0164 |
+| 7 | O1 + per-layer α (Task 05) | 12.4867 | +0.1418 |
+| 8 | C + per-layer α (Task 05) | 12.3670 | +0.0221 |
+
+At 2.7B the C scheme has nearly closed the gap to FP16 already (C/max +0.0164), so the percentile improvement compresses to **+0.005 PPL** — directionally consistent with 1.3B but at the noise floor. The thesis-relevant takeaway is the *trajectory*: percentile-vs-max delta = 0.146 PPL at 1.3B, 0.005 at 2.7B. Outlier-handling matters most exactly where there's PPL headroom to recover; once the scheme already saturates near FP16, the smoothing-statistic choice becomes second-order.
+
+### OPT-6.7B verification (Task 02 sweep pending)
+
+Cells: [`experiments/verification/opt_6_7b/full_table_cells.md`](../verification/opt_6_7b/full_table_cells.md). Row 5 uses placeholder `(p=0.995, α=0.5)` extrapolated from 2.7B; replace with actual Task 02 6.7B winner once that sweep runs.
+
+| # | Config | PPL | Δ vs FP16 |
+|---|---|---:|---:|
+| 1 | FP16 | 10.6732 | +0.0000 |
+| 2 | Naive W8A8 | 25.9135 | +15.2403 |
+| 3 | O1 max α=0.5 | 10.6988 | +0.0256 |
+| 4 | O2 max α=0.5 | 10.7000 | +0.0268 |
+| 5 | **C pct p=0.995, α=0.5** | **10.6875** | **+0.0143** |
+| 6 | C max α=0.5 | 10.7252 | +0.0520 |
+| 7 | O1 + per-layer α | 10.7382 | +0.0650 |
+| 8 | C + per-layer α | 10.6826 | +0.0094 |
+
+C/pct beats C/max by 0.038 PPL — percentile is back to being meaningful at 6.7B (cf. 0.005 at 2.7B). C+per-layer-α (10.6826) ≈ C/pct (10.6875), same convergence as on 1.3B.
+
+### OPT-13B verification (Task 02 sweep pending)
+
+Cells: [`experiments/verification/opt_13b/full_table_cells.md`](../verification/opt_13b/full_table_cells.md). Row 5 placeholder `(p=0.995, α=0.5)`; not the true 13B optimum.
+
+| # | Config | PPL | Δ vs FP16 |
+|---|---|---:|---:|
+| 1 | FP16 | 9.9439 | +0.0000 |
+| 2 | Naive W8A8 | 4325.6772 | +4315.7333 |
+| 3 | O1 max α=0.5 | 10.1767 | +0.2328 |
+| 4 | O2 max α=0.5 | 10.2037 | +0.2598 |
+| 5 | **C pct p=0.995, α=0.5** | **10.0077** | **+0.0638** |
+| 6 | C max α=0.5 | 10.1691 | +0.2252 |
+| 7 | O1 + per-layer α | 9.9963 | +0.0524 |
+| 8 | C + per-layer α | 9.9825 | +0.0386 |
+
+C/pct beats C/max by 0.161 PPL even at the placeholder (p, α) — the largest percentile-vs-max gap on the ladder. C+per-layer (9.9825) and C/pct (10.0077) both within 0.07 of FP16.
+
 ## Open implementation questions
 
 - Calibration approach is **per-channel top-K buffer**, exact for every `p ≥ p_min`. `K = ⌈(1 - p_min)·N⌉ + safety` and the buffer is updated batch-by-batch via `torch.topk` along `dim=0`. After calibration, the sorted buffer is indexed (with linear interpolation matching `torch.quantile`) for every requested `p`. Estimated/binned approximations are explicitly avoided.
@@ -152,4 +234,4 @@ Findings:
 
 ## Status
 
-OPT-125M: ✅ done · OPT-1.3B: ✅ Exp1 + Exp2 done · OPT-2.7B: ✅ done · OPT-6.7B: ⏳ cells ready ([opt_6_7b/](opt_6_7b/)) · OPT-13B: ⏳ cells ready, A100 + Colab Pro+ High-RAM ([opt_13b/](opt_13b/))
+OPT-125M: ✅ done · OPT-1.3B: ✅ Exp1 + Exp2 done · OPT-2.7B: ✅ done · OPT-6.7B: ⏳ cells ready ([opt_6_7b/](opt_6_7b/)) · OPT-13B: ⏳ cells ready, A100-80 ([opt_13b/](opt_13b/))
