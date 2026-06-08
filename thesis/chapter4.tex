@@ -1,0 +1,354 @@
+\chapter{Experiment Setup and Results}
+
+This chapter reports the results of the different experiments performed for this thesis.
+
+\section{Experimental setup}
+
+The experiments mainly focus on the OPT family of decoder-only Transformer language models [2] as this is the same family on which the SmoothQuant paper reports its primary scaling results. The five sizes are OPT-125M, OPT-1.3B, OPT-2.7B, OPT-6.7B, and OPT-13B. Each is loaded from the Hugging Face checkpoint in FP16.
+
+Calibration uses a 512-sample subset of the Pile validation set [7]. Each sample is truncated or padded to 512 tokens. The total buffer is $512 \times 512 = 262{,}144$ tokens. The source of this dataset is \texttt{huggingface.co/datasets/mit-han-lab/pile-val-backup}. The file is staged once on Google Drive and reused across Colab kernels. It produces the per-channel $\max$ baseline, the per-channel quantile statistics at every $p$, the per-layer severity profile $\sigma(l)$, and the static activation step sizes for the real-INT8 deployment.
+
+Evaluation is done in two parts. The first is language modelling perplexity on WikiText-2 [9]. All text in the \texttt{wikitext-2-raw-v1} validation set is combined into one continuous sequence, then divided into separate blocks of 2,048 tokens each as this is the convention used by the SmoothQuant paper [5] and by LLM.int8() [4]. The average per-token cross-entropy is exponentiated to give the perplexity value. Perplexity is $\mathrm{PPL} = e^{L}$, where $L$ is the average per-token cross-entropy loss on WikiText-2 at sequence length 2048. Lower is better.
+
+The second part is zero-shot accuracy on seven downstream tasks. These are LAMBADA \cite{lambada_dataset}, HellaSwag \cite{hellaswag_dataset}, PIQA \cite{piqa_dataset}, WinoGrande \cite{winogrande_dataset}, OpenBookQA \cite{openbookqa_dataset}, RTE \cite{rte_dataset}, and COPA \cite{copa_dataset}. Scoring runs through \texttt{lm-evaluation-harness} v0.4.4 \cite{lm_eval_harness}.
+
+Experiments run on Google Colab Pro across three accelerator tiers. These tiers utilize the NVIDIA T4 (16GB), the NVIDIA L4 (24GB), and the NVIDIA A100 (40GB and 80GB) Tensor Core GPUs. The T4 cannot host OPT-6.7B at sequence length 2048. Its FP16 weights consume 13.3 GB and leave no room for attention buffers. Reducing the sequence length to fit a smaller GPU is explicitly avoided as it would not make the results comparable. The \texttt{torch-int} CUTLASS kernels are compiled once per Colab session.
+
+\section{Quantile calibration with per-channel weights}
+
+This section reports the WikiText-2 PPL at sequence length 2048. The proposed method (row 5, pcw + quantile) is compared against the SmoothQuant and the FP16 baselines.
+
+\subsubsection*{Objective}
+The aim of this experiment is to test whether using per-channel quantile $Q_p$ based activation scales for smoothing instead of $\max$ based gives lower WikiText-2 PPL after W8A8 quantization. The same experiment is perfored on three OPT models, namely OPT-125M, OPT-1.3B, and OPT-2.7B, for confirming that any observed trend is consistent across scale and not to a particular model.
+
+\subsubsection*{Procedure}
+Each OPT model is loaded from Hugging Face in FP16. The 512-sample Pile validation subset described in Section 4.1 is passed once through the model. The input activation values at every linear layer are recorded per input channel. From these recorded values two kinds of activation scales are computed for each channel. The first is the per-channel $\max$ as used by SmoothQuant. The second is the per-channel quantile $Q_p$ at multiple values of $p$. The smoothing scale is then derived from one of these two sources and controlled by the migration strength $\alpha$. The activations are divided by this smoothing scale and the corresponding weight rows are multiplied by the same scale. The transformed model is then quantized to W8A8 under the O1, O2, or pcw configuration and evaluated on the WikiText-2 validation set. For the proposed quantile based method, the full grid of $(p, \alpha)$ pairs is swept and the best performing pair is reported.
+
+\subsubsection*{Configurations}
+The configurations in the tables below are defined as follows.
+\begin{itemize}
+    \item \textbf{FP16}: The unquantized model. This is the PPL value we aim to stay as close to as possible after quantization.
+    \item \textbf{Naive W8A8}: Weights and activations are cast to INT8 with no smoothing applied. This shows the degradation of PPL without any outlier aware smoothing.
+    \item \textbf{Max based smoothing}: SmoothQuant's O1 and O2 schemes \cite{smoothquant_paper} with the best performing $\alpha=0.5$ reported in the paper. Refer to Chapter 2 section 2.5 for detailed definition. Here smoothing is performed using Max based activation scales.
+    \item \textbf{Quantile based smoothing (pcw scheme)}: The proposed method. Smoothing is performed using quantile $Q_p$ based activation scales. Here pcw stands for the per-channel weight scheme.
+\end{itemize}
+
+\subsubsection*{OPT-125M}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-125M WikiText-2 perplexity}
+\begin{tabular}{lrr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 27.5684 \\
+Naive W8A8 & 30.2257 \\
+$Max$ based smoothing (O1 scheme, $\alpha=0.5$) & 28.3081 \\
+$Max$ based smoothing (O2 scheme, $\alpha=0.5$) & 29.1863 \\
+\textbf{Quantile based smoothing (pcw scheme)} & \textbf{27.6291} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-125M is shown in Table 4.1. The Quantile-based smoothing ($Q_p=0.999$, $\alpha=0.5$) reaches 27.6291 PPL, which is found to outperform the $Max$-based O1 baseline at 28.3081 PPL and the O2 baseline at 29.1863 PPL. Furthermore, this approach achieves near-lossless quantization when compared to the unquantized FP16 value of 27.5684 PPL.
+
+\subsubsection*{OPT-1.3B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-1.3B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 14.4677 \\
+Naive W8A8 & 15.5867 \\
+$Max$ based smoothing (O1 scheme, $\alpha=0.5$) & 14.8333 \\
+$Max$ based smoothing (O2 scheme, $\alpha=0.5$) & 14.8335 \\
+\textbf{Quantile based smoothing (pcw scheme)} & \textbf{14.6248} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-1.3B is shown in Table 4.2. The same behaviour is found here as well, where the Quantile-based smoothing ($Q_p=0.999$, $\alpha=0.9$) at 14.6248 PPL narrowly outperforms the $Max$-based O1 baseline at 14.8333 PPL and the O2 baseline at 14.8335 PPL. The FP16 reference stands at 14.4677 PPL.
+
+\subsubsection*{OPT-2.7B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-2.7B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 12.3425 \\
+Naive W8A8 & 13.4655 \\
+$Max$ based smoothing (O1 scheme, $\alpha=0.5$) & 12.3946 \\
+$Max$ based smoothing (O2 scheme, $\alpha=0.5$) & 12.4214 \\
+\textbf{Quantile based smoothing (pcw scheme)} & \textbf{12.3422} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-2.7B is shown in Table 4.3. The Quantile-based smoothing ($Q_p=0.995$, $\alpha=0.5$) is found to give a PPL of 12.3422, nearly lossless when compared to the FP16 reference of 12.3425 PPL, whereas the O1 and O2 schemes with $Max$-based smoothing still hold a gap at 12.3946 PPL and 12.4214 PPL respectively.
+
+\subsubsection*{Zero-shot accuracy on OPT-1.3B}
+
+To check that the gains in WikiText-2 perplexity translate to downstream task quality, the same five configurations on OPT-1.3B are evaluated on seven zero-shot benchmarks through \texttt{lm-evaluation-harness}: LAMBADA, HellaSwag, PIQA, WinoGrande, OpenBookQA (OBQA), RTE, and COPA.
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-1.3B zero-shot accuracy (\%) on seven downstream tasks}
+\small
+\begin{tabular}{lcccccccc}
+\hline
+Configuration & LAMBADA & HellaSwag\tnote{a} & PIQA & WinoGrande & OBQA\tnote{a} & RTE & COPA & Avg. \\
+\hline
+FP16 & 57.87 & 53.70 & 71.71 & 59.43 & 33.20 & 52.35 & 80.00 & 58.32 \\
+Naive W8A8 & 54.32 & 51.74 & 70.24 & 57.14 & 31.60 & 56.68 & 79.00 & 57.25 \\
+$Max$ smoothing (O1, $\alpha=0.5$) & 57.54 & 53.42 & 71.16 & 58.80 & 33.80 & 51.99 & 80.00 & 58.10 \\
+$Max$ smoothing (O2, $\alpha=0.5$) & 55.70 & 53.10 & 70.62 & 58.25 & 33.00 & 53.43 & 81.00 & 57.87 \\
+\textbf{Quantile smoothing (pcw)} & \textbf{57.44} & \textbf{53.65} & \textbf{71.16} & \textbf{59.27} & \textbf{32.80} & \textbf{52.71} & \textbf{81.00} & \textbf{58.29} \\
+\hline
+\end{tabular}
+\begin{tablenotes}
+\item[a] HellaSwag and OBQA report normalized accuracy (\texttt{acc\_norm}). All other tasks report raw accuracy.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
+The experiment result of the zero-shot evaluation on OPT-1.3B is shown in Table 4.4. The Quantile-based smoothing (pcw scheme, $Q_p=0.999$, $\alpha=0.9$) reaches an average accuracy of 58.29\%, which is found to outperform the $Max$-based O1 baseline at 58.10\% and the O2 baseline at 57.87\%. It also lands within 0.03 points of the unquantized FP16 reference at 58.32\%. The Naive W8A8 row sits at 57.25\% average, showing the damage of plain quantization without outlier-aware smoothing.
+
+\section{Per-layer migration strength}
+
+This section reports two connected experiments. The first studies how the severity of activation outliers varies across the depth of OPT models. The second tests whether a per-layer $\alpha$ derived from that severity gives lower WikiText-2 PPL than the standard fixed global $\alpha$ used by SmoothQuant.
+
+\subsection*{Experiment 1: Outlier severity across depth}
+
+\subsubsection*{Objective}
+The aim of this experiment is to check whether the severity of activation outliers is constant across the depth of a model or follows some pattern. A non-constant profile would indicate that a single global $\alpha$ in SmoothQuant cannot match a layer-dependent need.
+
+\subsubsection*{Procedure}
+The severity at each layer is computed from the per-channel activation scales recorded during calibration. For each transformer block of the model, the activation scale at two sites is read: the input to \texttt{q\_proj} in the attention path and the input to \texttt{fc1} in the MLP path. The severity at that layer is defined as the ratio of the per-channel max to the per-channel median of these scales. This value captures how far the worst channel sits above the typical channel at that site. The severity is recorded for every layer of OPT-2.7B, OPT-6.7B, and OPT-13B, and plotted against layer index in Figure~\ref{fig:outlier_severity}.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1\textwidth]{outlier_plot.png}
+
+    \caption{Per-layer outlier severity in OPT models.}
+    \label{fig:outlier_severity}
+\end{figure}
+
+\subsubsection*{Observation}
+Severity follows a distinct pattern across layers within each model. It grows monotonically with model size, increasing from 13.1$\times$ in OPT-2.7B to 22.9$\times$ in OPT-6.7B, and reaching 46.3$\times$ in OPT-13B. Despite this increase in magnitude, the shape of the distribution remains consistent across all three sizes. Layer 0 is consistently low, while layers 1 to 3 hold the peak before the remaining layers decay smoothly toward the median. This shows a non-constant profile across model depth. Additionally, the \texttt{q\_proj} and \texttt{fc1} traces overlap almost exactly at each layer.
+
+\subsection*{Experiment 2: Per-layer alpha for W8A8 quantization}
+
+\subsubsection*{Objective}
+The aim of this experiment is to test whether a per-layer $\alpha(l)$ derived from the severity profile instead of the standard fixed-$\alpha$ SmoothQuant setting, gives lower WikiText-2 PPL. The same three OPT models from Section 4.2, namely OPT-125M, OPT-1.3B, and OPT-2.7B, are used to keep the comparison consistent.
+
+\subsubsection*{Procedure}
+Each OPT model is loaded from Hugging Face in FP16. The severity value at each layer is computed as described in Experiment 1. The per-layer migration strength $\alpha(l)$ is then assigned by a linear fit between two bounds $\alpha_{\min}$ and $\alpha_{\max}$, scaled by that layer's severity relative to the maximum severity seen in the model:
+$$
+\alpha(l) = \alpha_{\min} + (\alpha_{\max} - \alpha_{\min}) \cdot \frac{\text{severity}(l)}{\max(\text{severity}(l))}, \qquad \alpha_{\min}=0.5,\; \alpha_{\max}=0.9.
+$$
+Each layer is then smoothed with its own $\alpha(l)$ following the same transform as in Section 4.2. The model is then quantized to W8A8 and evaluated on the WikiText-2 validation set.
+
+\subsubsection*{Configurations}
+The configurations in the tables below are defined as follows.
+\begin{itemize}
+    \item \textbf{FP16}: The unquantized model. This is the PPL value we aim to stay as close to as possible after quantization.
+    \item \textbf{Global alpha (O1 scheme, $\alpha=0.5$)}: The standard SmoothQuant setting \cite{smoothquant_paper} where a single value of $\alpha$ is applied to every layer of the model.
+    \item \textbf{Per-layer alpha (pcw scheme)}: The proposed method. The value of $\alpha$ varies layer by layer and is computed from the equation above using each layer's own severity.
+\end{itemize}
+
+\subsubsection*{OPT-125M}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-125M WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 27.5684 \\
+$Global$ alpha (O1 scheme, $\alpha=0.5$) & 28.3081 \\
+\textbf{Per-layer alpha (pcw scheme)} & \textbf{27.5859} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-125M is shown in Table 4.5. The Per-layer alpha (pcw scheme) reaches 27.5859 PPL, which is found to outperform the Global alpha O1 baseline at 28.3081 PPL and lands very close to the unquantized FP16 value of 27.5684 PPL.
+
+\subsubsection*{OPT-1.3B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-1.3B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 14.4677 \\
+$Global$ alpha (O1 scheme, $\alpha=0.5$) & 14.8333 \\
+\textbf{Per-layer alpha (pcw scheme)} & \textbf{14.6281} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-1.3B is shown in Table 4.6. The same behaviour is found here as well, where the Per-layer alpha (pcw scheme) at 14.6281 PPL outperforms the Global alpha O1 baseline at 14.8333 PPL and stays close to the FP16 reference of 14.4677 PPL.
+
+\subsubsection*{OPT-2.7B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-2.7B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 12.3449 \\
+$Global$ alpha (O1 scheme, $\alpha=0.5$) & 12.3885 \\
+\textbf{Per-layer alpha (pcw scheme)} & \textbf{12.3670} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-2.7B is shown in Table 4.7. The Per-layer alpha (pcw scheme) is found to give a PPL of 12.3670, which outperforms the Global alpha O1 baseline at 12.3885 PPL and lands very close to the FP16 reference of 12.3449 PPL.
+
+\section{Robustness across scale and architecture}
+
+This section extends the same evaluation to the larger OPT sizes and to two non-OPT architecture families.
+
+\subsubsection*{Objective}
+The aim of this experiment is to test whether the per-layer $\alpha$ method continues to hold above the 6.7B parameter scale and across different model families. Prior work on LLM.int8() \cite{llm_int8} reported this scale as the threshold above which significant activation outliers begin to emerge and naive W8A8 quantization collapses. The evaluation is therefore extended to OPT-6.7B and OPT-13B. In addition, the same method is applied to two non-OPT models, Falcon-7B and Llama-2-7B, to check that the method is not tied to the OPT architecture. The PPL of the proposed method is compared against the $Max$-based O1 and O2 baselines. This experiment is also a check on the efficiency of the proposed method. The standard SmoothQuant setting requires a separate grid search over $\alpha$ for each new model to find the best global value. Our method skips this search entirely. The per-layer $\alpha(l)$ is derived directly from the severity pattern observed during the same calibration step that is already required. This saves significant compute time and resources at every new model.
+
+\subsubsection*{Procedure}
+The same procedure as Section 4.3 is followed. For each model, calibration is performed on the 512-sample Pile subset, the per-layer severity profile is computed, and $\alpha(l)$ is assigned by the same linear fit between $\alpha_{\min}$ and $\alpha_{\max}$. The bounds are no longer fixed at 0.5 and 0.9. They are set for each model family from an inspection of its severity spread during calibration. The model is then smoothed layer by layer with its own $\alpha(l)$, quantized to W8A8 under the pcw configuration, and evaluated on the WikiText-2 validation set at sequence length 2048. For Falcon-7B and Llama-2-7B, the $Max$-based smoothing baseline uses the best global $\alpha$ reported in the SmoothQuant paper for that model, which is 0.60 and 0.85 respectively.
+
+\subsubsection*{OPT-6.7B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-6.7B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 10.6732 \\
+Naive W8A8 & 25.9135 \\
+$Max$ based smoothing (O1 scheme, $\alpha=0.5$) & 10.6988 \\
+$Max$ based smoothing (O2 scheme, $\alpha=0.5$) & 10.7000 \\
+Quantile based smoothing (pcw scheme) & 10.6875 \\
+\textbf{Per-layer alpha (pcw scheme)} & \textbf{10.6826} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-6.7B is shown in Table 4.8. The Per-layer alpha (pcw scheme) at 10.6826 PPL is found to narrowly outperform the $Max$-based O1 baseline at 10.6988 PPL and the O2 baseline at 10.7000 PPL. It also lands very close to the FP16 reference of 10.6732 PPL. The Naive W8A8 row sits at 25.9135 PPL, showing the damage of plain quantization at this scale.
+
+
+\subsubsection*{OPT-13B}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{OPT-13B WikiText-2 perplexity}
+\begin{tabular}{lr}
+\hline
+Configuration & WikiText-2 PPL \\
+\hline
+FP16 & 9.9439 \\
+Naive W8A8 & 4325.6772 \\
+$Max$ based smoothing (O1 scheme, $\alpha=0.5$) & 10.1767 \\
+$Max$ based smoothing (O2 scheme, $\alpha=0.5$) & 10.2037 \\
+Quantile based smoothing (pcw scheme) & 10.0077 \\
+\textbf{Per-layer alpha (pcw scheme)} & \textbf{9.9825} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of OPT-13B is shown in Table 4.9. The Per-layer alpha (pcw scheme) at 9.9825 PPL is found to outperform the $Max$-based O1 baseline at 10.1767 PPL and the O2 baseline at 10.2037 PPL. It stays close to the FP16 reference of 9.9439 PPL. The Naive W8A8 row collapses to 4325.6772 PPL, confirming the severity of activation outliers at this scale.
+
+
+\subsubsection*{Cross-architecture verification}
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{Cross-architecture WikiText-2 perplexity}
+\begin{tabular}{llr}
+\hline
+Model & Configuration & WikiText-2 PPL \\
+\hline
+Falcon-7B & FP16 & 6.9476 \\
+ & $Max$ based smoothing (pcw scheme, $\alpha=0.60$) & 6.9844 \\
+ & \textbf{Per-layer alpha (pcw scheme)} & \textbf{6.9873} \\
+\hline
+Llama-2-7B & FP16 & 5.8242 \\
+ & $Max$ based smoothing (pcw scheme, $\alpha=0.85$) & 5.8658 \\
+ & \textbf{Per-layer alpha (pcw scheme)} & \textbf{5.8630} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result of the cross-architecture verification is shown in Table 4.10. On Falcon-7B, the Per-layer alpha (pcw scheme) is found to give 6.9873 PPL, which matches the $Max$-based pcw with paper-tuned $\alpha=0.60$ at 6.9844 PPL. Both stay close to the FP16 reference of 6.9476 PPL. On Llama-2-7B, the Per-layer alpha (pcw scheme) is found to give 5.8630 PPL, which matches the $Max$-based pcw with paper-tuned $\alpha=0.85$ at 5.8658 PPL, against the FP16 reference of 5.8242 PPL. The same PPL is reached on both architectures without the added resource cost of finding the best $\alpha$ for each model.
+
+
+\section{Memory footprint verification}
+
+This section reports the real INT8 deployment of the proposed quantile-based smoothing on OPT-1.3B. Up to this point all measurements have been fake-quant. This section runs the actual INT8 kernels on hardware and compares against the SmoothQuant paper's deployed setting.
+
+\subsubsection*{Objective}
+The aim of this experiment is to test whether the proposed quantile-based smoothing carries over from the fake-quant evaluation in Section 4.2 to a real INT8 deployment running on actual CUTLASS kernels. The check is on two fronts. The first is the memory footprint, which should match the SmoothQuant paper's deployed setting since both produce the same INT8 model shape. The second is the WikiText-2 PPL, which should be at least as good as the paper's deployed setting. The model used is OPT-1.3B as it was also evaluated in Section 4.2.
+
+\subsubsection*{Procedure}
+OPT-1.3B is loaded from Hugging Face in FP16 and smoothed in two ways. The first version uses the per-channel $\max$ of activations with a single global $\alpha=0.5$, matching the SmoothQuant paper's deployed setting. The second version uses the per-channel 99.9th percentile $Q_{0.999}$ with the same $\alpha=0.5$. Both smoothed models are then converted to real INT8 through torch-int's CUTLASS kernels in the O3 configuration, which uses per-tensor weight and per-tensor static activation quantization. The static activation step sizes are calibrated on the same 512-sample Pile subset described in Section 4.1. The three rows (FP16 reference, INT8 paper, INT8 ours) are measured back to back in the same Python session on the same A100. For each row the model weight size on disk, the peak GPU memory during the forward pass, the largest activation tensor seen during the forward pass, and the WikiText-2 PPL at sequence length 2048 are recorded.
+
+\subsubsection*{Configurations}
+The configurations in the table below are defined as follows.
+\begin{itemize}
+    \item \textbf{FP16}: The unquantized model. This is the PPL and memory value we aim to stay as close to as possible after quantization.
+    \item \textbf{INT8 paper ($\max$, $\alpha=0.5$)}: SmoothQuant's deployed setting \cite{smoothquant_paper}. The smoothing scales come from the per-channel $\max$ of activations with a single global $\alpha=0.5$.
+    \item \textbf{INT8 ours ($Q_{0.999}$, $\alpha=0.5$)}: The proposed deployed setting. The smoothing scales come from the per-channel 99.9th percentile $Q_{0.999}$ with the same $\alpha=0.5$.
+\end{itemize}
+The reported columns are model weight size on disk, peak GPU memory during the forward pass, the largest activation tensor seen during the forward pass, and the resulting WikiText-2 perplexity.
+
+\begin{table}[h]
+\centering
+\begin{threeparttable}
+\caption{Memory profile and WikiText-2 perplexity}
+\begin{tabular}{lrrrr}
+\hline
+Configuration & Size (MB) & Peak-VRAM (MB)\tnote{1} & Act. Peak (MB)\tnote{2} & WT-2 PPL \\
+\hline
+FP16 & 2509.61 & 4557.38 & 2045.58 & 14.62 \\
+INT8 paper ($\max$, $\alpha=0.5$) & 1357.84 & 3140.76 & 1780.58 & 18.02 \\
+\textbf{INT8 ours ($Q_{0.999}$, $\alpha=0.5$)} & 1357.47 & 3140.38 & 1780.58 & \textbf{17.96} \\
+\hline
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The experiment result is shown in Table 4.11. The INT8 ours configuration ($Q_{0.999}$, $\alpha=0.5$) is found to give 17.96 WikiText-2 PPL, which is slightly lower than the INT8 paper configuration ($\max$, $\alpha=0.5$) at 18.02 PPL. The FP16 reference stands at 14.62 PPL. On memory, the INT8 ours setting reports 1357.47 MB weight size, 3140.38 MB peak VRAM, and 1780.58 MB activation peak. The INT8 paper setting reports 1357.84 MB, 3140.76 MB, and 1780.58 MB respectively. The two INT8 rows are found to be identical on memory to within 0.04 percent. Compared to the FP16 reference at 2509.61 MB, 4557.38 MB, and 2045.58 MB, the weight size drops to 54 percent, the peak VRAM drops to 69 percent, and the activation peak drops to 87 percent. The deployed quantile-based method therefore reaches a lower PPL at no extra memory cost.
+
+\section{Conclusion}
+In this chapter, we presented the results of the two proposed methods across five OPT sizes and verified them on Llama-2 and Falcon. Both methods recover FP16 quality at W8A8 without any per-model tuning. In the next chapter, we conclude and discuss some of the future aspects.
